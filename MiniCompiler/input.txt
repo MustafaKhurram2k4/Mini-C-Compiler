@@ -1,0 +1,6 @@
+int score = 85;
+int passed = 0;
+
+if (score > 40) {
+    passed = 1;
+}
