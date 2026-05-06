@@ -1,34 +1,52 @@
 #include "parser.h"
 #include <iostream>
-#include <iomanip> //forcolumn alignment
+#include <iomanip>
 
-Parser::Parser(const std::vector<Token>& tkns) : tokens(tkns), pos(0), temp_counter(1), label_counter(1), reg_counter(1) {}
+using namespace std;
 
-Token Parser::currentToken() { return (pos < tokens.size()) ? tokens[pos] : Token{END_OF_FILE, "", "EOF", 0}; }
-void Parser::advance() { if (pos < tokens.size()) pos++; }
+Parser::Parser(const vector<Token>& tkns) : tokens(tkns), pos(0), temp_counter(1), label_counter(1), reg_counter(1) {}
 
-void Parser::logTrace(const std::string& msg) {
+Token Parser::currentToken() { 
+    return (pos < tokens.size()) ? tokens[pos] : Token{END_OF_FILE, "", "EOF", 0}; 
+}
+
+// Looks one step backward to find where an error actually started
+Token Parser::previousToken() {
+    if (pos > 0) return tokens[pos - 1];
+    return Token{UNKNOWN, "", "UNKNOWN", 1};
+}
+
+void Parser::advance() { 
+    if (pos < tokens.size()) pos++; 
+}
+
+void Parser::logTrace(const string& msg) {
     compilation_trace.push_back(msg);
 }
 
-void Parser::expect(TokenType type, const std::string& err_msg) {
-    if (currentToken().type == type) advance();
-    else {
-        std::cerr << "\n\033[1;31m[SYNTAX ERROR] Line " << currentToken().line << ": " << err_msg << " near '" << currentToken().value << "'\033[0m\n";
+// UPDATED: Now uses previousToken() to blame the correct line for missing semicolons!
+void Parser::expect(TokenType type, const string& err_msg) {
+    if (currentToken().type == type) {
+        advance();
+    } else {
+        Token prev = previousToken(); 
+        cerr << "\n\033[1;31m[SYNTAX ERROR] Line " << prev.line 
+             << ": " << err_msg << " (after '" << prev.value << "')\033[0m\n";
         exit(1);
     }
 }
 
-void Parser::checkVariable(const std::string& id, int line) {
+// Semantic Analysis: Checks if a variable is in the Symbol Table
+void Parser::checkVariable(const string& id, int line) {
     if (symbol_table.find(id) == symbol_table.end()) {
-        std::cerr << "\n\033[1;31m[SEMANTIC ERROR] Line " << line << ": Variable '" << id << "' is used before being declared.\033[0m\n";
+        cerr << "\n\033[1;31m[SEMANTIC ERROR] Line " << line << ": Variable '" << id << "' is used before being declared.\033[0m\n";
         exit(1);
     }
 }
 
-std::string Parser::newTemp() { return "t" + std::to_string(temp_counter++); }
-std::string Parser::newLabel() { return "L" + std::to_string(label_counter++); }
-std::string Parser::newReg() { return "R" + std::to_string(reg_counter++); }
+string Parser::newTemp() { return "t" + to_string(temp_counter++); }
+string Parser::newLabel() { return "L" + to_string(label_counter++); }
+string Parser::newReg() { return "R" + to_string(reg_counter++); }
 
 void Parser::parse() {
     logTrace("Starting compilation pipeline...");
@@ -43,72 +61,37 @@ void Parser::parseStatement() {
     else if (currentToken().type == IDENTIFIER) parseAssignment();
     else if (currentToken().type == KEYWORD && currentToken().value == "if") parseIf();
     else if (currentToken().type == KEYWORD && currentToken().value == "while") parseWhile();
+    else if (currentToken().type == KEYWORD && currentToken().value == "print") parsePrint();
     else if (currentToken().type == LBRACE) parseBlock();
     else {
-        std::cerr << "\n\033[1;31m[SYNTAX ERROR] Line " << currentToken().line << ": Unexpected token '" << currentToken().value << "'\033[0m\n";
+        cerr << "\n\033[1;31m[SYNTAX ERROR] Line " << currentToken().line << ": Unexpected token '" << currentToken().value << "'\033[0m\n";
         exit(1);
     }
 }
 
-void Parser::parseBlock() {
-    expect(LBRACE, "Expected '{' to open block");
-    logTrace("Entered new scope block.");
-    while (currentToken().type != RBRACE && currentToken().type != END_OF_FILE) {
-        parseStatement();
-    }
-    expect(RBRACE, "Expected '}' to close block");
-    logTrace("Exited scope block.");
-}
-
 void Parser::parseDeclaration() {
-    advance(); // 'int'
-    std::string id = currentToken().value;
+    advance(); // Consume 'int'
+    string id = currentToken().value;
     expect(IDENTIFIER, "Expected variable name after 'int'");
     expect(OPERATOR, "Expected '=' for initialization");
-    std::string val = currentToken().value;
-    expect(NUMBER, "Expected a numeric value");
+    
+    string result = parseExpression(); 
     expect(SYMBOL, "Expected ';' at end of declaration");
 
-    symbol_table[id] = "int";
-    logTrace("Declared Integer: " + id + " initialized to " + val);
+    symbol_table[id] = "int"; // Add to Symbol Table
+    logTrace("Declared Integer: " + id + " initialized to " + result);
     
-    tac_instructions.push_back({id + " = " + val, "Allocate & assign value to " + id});
-    asm_instructions.push_back({"MOV " + id + ", " + val, "Store literal " + val + " directly into memory for " + id});
-}
-
-std::string Parser::parseExpression() {
-    std::string left = currentToken().value;
-    if (currentToken().type == IDENTIFIER) checkVariable(left, currentToken().line);
-    advance();
-
-    if (currentToken().type == OPERATOR || currentToken().type == REL_OP) {
-        std::string op = currentToken().value;
-        advance();
-        std::string right = currentToken().value;
-        if (currentToken().type == IDENTIFIER) checkVariable(right, currentToken().line);
-        advance();
-
-        std::string temp = newTemp();
-        tac_instructions.push_back({temp + " = " + left + " " + op + " " + right, "Evaluate expression into temp variable " + temp});
-        
-        std::string reg = newReg();
-        asm_instructions.push_back({"MOV " + reg + ", " + left, "Load left operand into CPU register " + reg});
-        
-        std::string asm_op = op == "+" ? "ADD " : op == "-" ? "SUB " : op == "*" ? "MUL " : "CMP ";
-        asm_instructions.push_back({asm_op + reg + ", " + right, "Perform " + op + " operation with right operand"});
-        
-        return temp;
-    }
-    return left; // Single value
+    tac_instructions.push_back({id + " = " + result, "Allocate & assign value to " + id});
+    asm_instructions.push_back({"MOV " + id + ", " + result, "Store computed result into memory for " + id});
 }
 
 void Parser::parseAssignment() {
-    std::string dest = currentToken().value;
+    string dest = currentToken().value;
     checkVariable(dest, currentToken().line);
     advance();
     expect(OPERATOR, "Expected '=' in assignment");
     
-    std::string result = parseExpression();
+    string result = parseExpression();
     expect(SYMBOL, "Expected ';' at end of statement");
 
     tac_instructions.push_back({dest + " = " + result, "Assign computed result to " + dest});
@@ -116,26 +99,117 @@ void Parser::parseAssignment() {
     logTrace("Processed assignment for variable: " + dest);
 }
 
+// RECURSIVE DESCENT MATH PARSER (BODMAS SUPPORT)
+// 1. Expression handles + and - (Lowest Precedence)
+string Parser::parseExpression() {
+    string left = parseTerm(); 
+    while (currentToken().value == "+" || currentToken().value == "-" || currentToken().type == REL_OP) {
+        string op = currentToken().value;
+        advance();
+        string right = parseTerm(); 
+        
+        string temp = newTemp();
+        tac_instructions.push_back({temp + " = " + left + " " + op + " " + right, "Evaluate expression"});
+        
+        string reg = newReg();
+        asm_instructions.push_back({"MOV " + reg + ", " + left, "Load left operand to register"});
+        string asm_op = (op == "+") ? "ADD " : (op == "-") ? "SUB " : "CMP ";
+        asm_instructions.push_back({asm_op + reg + ", " + right, "Perform " + op + " operation"});
+        
+        left = temp; 
+    }
+    return left; 
+}
+
+// 2. Term handles * and / (Highest Math Precedence)
+string Parser::parseTerm() {
+    string left = parseFactor();
+    while (currentToken().value == "*" || currentToken().value == "/") {
+        string op = currentToken().value;
+        advance();
+        string right = parseFactor();
+
+        string temp = newTemp();
+        tac_instructions.push_back({temp + " = " + left + " " + op + " " + right, "Evaluate term"});
+        
+        string reg = newReg();
+        asm_instructions.push_back({"MOV " + reg + ", " + left, "Load left operand to register"});
+        string asm_op = (op == "*") ? "MUL " : "DIV ";
+        asm_instructions.push_back({asm_op + reg + ", " + right, "Perform " + op + " operation"});
+        
+        left = temp;
+    }
+    return left;
+}
+
+// 3. Factor handles Numbers, Variables, and Parentheses (e.g. (a+b) )
+string Parser::parseFactor() {
+    if (currentToken().type == NUMBER) {
+        string val = currentToken().value;
+        advance();
+        return val;
+    } else if (currentToken().type == IDENTIFIER) {
+        string val = currentToken().value;
+        checkVariable(val, currentToken().line);
+        advance();
+        return val;
+    } else if (currentToken().type == LPAREN) {
+        advance(); // Consume '('
+        string val = parseExpression(); // Recursively parse inside
+        expect(RPAREN, "Expected ')' to close math grouping");
+        return val;
+    }
+    cerr << "\n\033[1;31m[SYNTAX ERROR] Line " << currentToken().line << ": Expected number or variable\033[0m\n";
+    exit(1);
+}
+
+// CONTROL FLOW & UTILITIES
+void Parser::parsePrint() {
+    advance(); // Consume 'print'
+    expect(LPAREN, "Expected '('");
+    
+    string var = currentToken().value;
+    checkVariable(var, currentToken().line); 
+    advance();
+    
+    expect(RPAREN, "Expected ')'");
+    expect(SYMBOL, "Expected ';'");
+
+    tac_instructions.push_back({"print " + var, "Output value to console"});
+    asm_instructions.push_back({"PRINT " + var, "System call to output to screen"});
+    logTrace("Generated PRINT instruction for " + var);
+}
+
+void Parser::parseBlock() {
+    expect(LBRACE, "Expected '{'");
+    logTrace("Entered new scope block.");
+    while (currentToken().type != RBRACE && currentToken().type != END_OF_FILE) {
+        parseStatement();
+    }
+    expect(RBRACE, "Expected '}'");
+    logTrace("Exited scope block.");
+}
+
 void Parser::parseIf() {
     advance(); // 'if'
-    expect(LPAREN, "Expected '(' for condition");
-    std::string cond = parseExpression();
-    expect(RPAREN, "Expected ')' after condition");
+    expect(LPAREN, "Expected '('");
+    string cond = parseExpression();
+    expect(RPAREN, "Expected ')'");
 
-    std::string L_False = newLabel();
-    std::string L_End = newLabel();
+    string L_False = newLabel();
+    string L_End = newLabel();
 
     logTrace("Generated IF condition branching.");
-    tac_instructions.push_back({"ifFalse " + cond + " goto " + L_False, "If condition fails, jump to False block"});
-    asm_instructions.push_back({"JMP_FALSE " + L_False, "Conditional CPU jump to label " + L_False});
+    tac_instructions.push_back({"ifFalse " + cond + " goto " + L_False, "Jump if condition fails"});
+    asm_instructions.push_back({"JMP_FALSE " + L_False, "Conditional jump"});
 
     parseBlock();
 
-    tac_instructions.push_back({"goto " + L_End, "Skip ELSE block by jumping to End"});
+    tac_instructions.push_back({"goto " + L_End, "Skip ELSE block"});
     tac_instructions.push_back({L_False + ":", "--- Start of ELSE/False Block ---"});
     
-    asm_instructions.push_back({"JMP " + L_End, "Unconditional jump to end of statement"});
-    asm_instructions.push_back({L_False + ":", "Label definition for False branch"});
+    asm_instructions.push_back({"JMP " + L_End, "Unconditional jump"});
+    asm_instructions.push_back({L_False + ":", "Label for False branch"});
 
     if (currentToken().type == KEYWORD && currentToken().value == "else") {
         advance();
@@ -143,68 +217,68 @@ void Parser::parseIf() {
         parseBlock();
     }
     
-    tac_instructions.push_back({L_End + ":", "--- End of IF Statement ---"});
-    asm_instructions.push_back({L_End + ":", "Label definition for End of IF"});
+    tac_instructions.push_back({L_End + ":", "--- End IF ---"});
+    asm_instructions.push_back({L_End + ":", "Label for End of IF"});
 }
 
 void Parser::parseWhile() {
     advance(); // 'while'
-    std::string L_Start = newLabel();
-    std::string L_End = newLabel();
+    string L_Start = newLabel();
+    string L_End = newLabel();
 
     logTrace("Generated WHILE loop structure.");
-    tac_instructions.push_back({L_Start + ":", "--- Loop Start Point ---"});
-    asm_instructions.push_back({L_Start + ":", "Label definition for Loop Start"});
+    tac_instructions.push_back({L_Start + ":", "--- Loop Start ---"});
+    asm_instructions.push_back({L_Start + ":", "Label for Loop Start"});
 
-    expect(LPAREN, "Expected '(' for loop condition");
-    std::string cond = parseExpression();
-    expect(RPAREN, "Expected ')' after loop condition");
+    expect(LPAREN, "Expected '('");
+    string cond = parseExpression();
+    expect(RPAREN, "Expected ')'");
 
-    tac_instructions.push_back({"ifFalse " + cond + " goto " + L_End, "If loop condition fails, break loop"});
-    asm_instructions.push_back({"JMP_FALSE " + L_End, "Exit loop if condition is false"});
+    tac_instructions.push_back({"ifFalse " + cond + " goto " + L_End, "Break loop if false"});
+    asm_instructions.push_back({"JMP_FALSE " + L_End, "Exit loop"});
 
     parseBlock();
 
-    tac_instructions.push_back({"goto " + L_Start, "Loop back to start condition"});
-    tac_instructions.push_back({L_End + ":", "--- Loop End Point ---"});
+    tac_instructions.push_back({"goto " + L_Start, "Loop back to start"});
+    tac_instructions.push_back({L_End + ":", "--- Loop End ---"});
     
-    asm_instructions.push_back({"JMP " + L_Start, "Jump back to evaluate loop condition again"});
-    asm_instructions.push_back({L_End + ":", "Label definition for Loop Exit"});
+    asm_instructions.push_back({"JMP " + L_Start, "Jump to loop condition"});
+    asm_instructions.push_back({L_End + ":", "Label for Loop Exit"});
 }
 
 void Parser::printUI() {
-    std::cout << "\n\033[1;36m=======================================================================\033[0m\n";
+    cout << "\n\033[1;36m=======================================================================\033[0m\n";
     
-    std::cout << "\n\033[1;33m[1] MEMORY MAP (SYMBOL TABLE)\033[0m\n";
-    std::cout << std::left << std::setw(15) << "VARIABLE" << "TYPE" << "\n";
-    std::cout << "---------------------------------\n";
+    cout << "\n\033[1;33m[1] MEMORY MAP (SYMBOL TABLE)\033[0m\n";
+    cout << left << setw(15) << "VARIABLE" << "TYPE" << "\n";
+    cout << "---------------------------------\n";
     for (const auto& pair : symbol_table) {
-        std::cout << std::left << std::setw(15) << ("\033[1;32m" + pair.first + "\033[0m") << pair.second << "\n";
+        cout << left << setw(15) << ("\033[1;32m" + pair.first + "\033[0m") << pair.second << "\n";
     }
 
-    std::cout << "\n\033[1;34m[2] INTERMEDIATE REPRESENTATION (TAC)\033[0m\n";
-    std::cout << std::left << std::setw(25) << "INSTRUCTION" << "EXPLANATION\n";
-    std::cout << "-----------------------------------------------------------------------\n";
+    cout << "\n\033[1;34m[2] INTERMEDIATE REPRESENTATION (TAC)\033[0m\n";
+    cout << left << setw(25) << "INSTRUCTION" << "EXPLANATION\n";
+    cout << "-----------------------------------------------------------------------\n";
     for (const auto& instr : tac_instructions) {
         if(instr.first.back() == ':') {
-            std::cout << "\033[1;31m" << instr.first << "\033[0m\n"; // Just print labels
+            cout << "\033[1;31m" << instr.first << "\033[0m\n"; 
         } else {
-            std::cout << std::left << std::setw(25) << instr.first 
-                      << "\033[1;30m// " << instr.second << "\033[0m\n";
+            cout << left << setw(25) << instr.first 
+                 << "\033[1;30m// " << instr.second << "\033[0m\n";
         }
     }
 
-    std::cout << "\n\033[1;36m[3] HARDWARE TARGET CODE (ASSEMBLY)\033[0m\n";
-    std::cout << std::left << std::setw(25) << "INSTRUCTION" << "EXPLANATION\n";
-    std::cout << "-----------------------------------------------------------------------\n";
+    cout << "\n\033[1;36m[3] HARDWARE TARGET CODE (ASSEMBLY)\033[0m\n";
+    cout << left << setw(25) << "INSTRUCTION" << "EXPLANATION\n";
+    cout << "-----------------------------------------------------------------------\n";
     for (const auto& instr : asm_instructions) {
         if(instr.first.back() == ':') {
-            std::cout << "\033[1;31m" << instr.first << "\033[0m\n";
+            cout << "\033[1;31m" << instr.first << "\033[0m\n";
         } else {
-            std::cout << std::left << std::setw(25) << instr.first 
-                      << "\033[1;30m; " << instr.second << "\033[0m\n";
+            cout << left << setw(25) << instr.first 
+                 << "\033[1;30m; " << instr.second << "\033[0m\n";
         }
     }
     
-    std::cout << "\n\033[1;32m[SYSTEM] Compilation finished. Zero errors detected.\033[0m\n\n";
+    cout << "\n\033[1;32m[SYSTEM] Compilation finished. Zero errors detected.\033[0m\n";
 }
